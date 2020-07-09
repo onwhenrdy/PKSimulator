@@ -37,3 +37,5 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+rsconnect/shinyapps.io/dominikselzer/pksimulator.dcf
+deploy.R
