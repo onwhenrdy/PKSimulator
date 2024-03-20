@@ -1,13 +1,5 @@
 ####################### ui ############################################
 
-# JS
-js_code <- '$(document).ready(function () {
-  $(".sidebar-menu").children("li").on("click", function() {
-    $("#main, #npi, #plotting, #advan, #rep").toggle();
-  });
-});
-'
-
 # components
 ui_header <- dashboardHeader(title = Settings.app.name,  
                              titleWidth = 260, 
@@ -33,7 +25,6 @@ ui_body <- dashboardBody(
   useShinyjs(),
   useShinyalert(),
   shinyDashboardThemes(theme = "onenote"),
-  tags$head(tags$script(js_code)),
   use_waiter(),
   waiter_show_on_load(spinner_start),
   tags$style(HTML(".box.box-solid.box-primary>.box-header {
@@ -104,39 +95,8 @@ ui_body <- dashboardBody(
     ),
     
     tabItem(tabName = "simulator",
-           
-      hidden(div(id = "body_div",
-        fluidRow(
-          box(
-            title = "GI Tract", 
-            status = "primary", 
-            solidHeader = TRUE, 
-            collapsible = TRUE,
-            column(12, align="center",
-                   plotlyOutput("abs")
-            )
-          ),
-          box(
-            title = "Central", 
-            status = "primary", 
-            solidHeader = TRUE, 
-            collapsible = TRUE,
-            column(12, align="center",
-              plotlyOutput("central")
-            )
-          )
-  
-      # hidden and div
-      ),
-      fluidRow(
-        tabBox(
-          title = "Tables",
-          width = 12,
-          tabPanel("Parameter", tableOutput("parameter")),
-          tabPanel("PK", tableOutput("pk"))
-          )
-        )
-      ))
+      
+      hidden(div(id = "body_div", uiOutput("simLayout")))
   )
 ))
 

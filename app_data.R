@@ -1,4 +1,215 @@
 
+# gathers the user input for the model
+gather_input <- function(input) {
+  
+  V1 <- input$VD # in l
+  
+  BioF <- input$BioF
+  if (is.null(BioF)) 
+    BioF <- 1
+  else   
+    BioF <- BioF / 100 # from %
+  
+  KA <- input$KIN # in 1/h
+  if (is.null(KA)) KA <- 0
+  
+  KE <- input$KEL # in 1/h
+  if ("MM" %in% input$EliminationModel) {
+    KE <- 0
+    Vmax <- input$VMAX # in 1/h
+    Km <- input$KM # in mg/l
+  } else {
+    Vmax <- 0
+    Km <- 1
+  }
+   
+  if ("2C" %in% input$Model) {
+    V2 <- input$VD2 # in l
+    Q <- input$Q # in l/h
+  } else  {
+    V2 <- 1
+    Q <- 0
+  }
+  
+  if (input$PD) {
+    Emax <- input$EMAX # in [1]
+    C50 <- input$C50 # in mg/l
+    Hill <- input$HILL # in [1]
+  } else {
+    Emax <- 0
+    C50 <- 1
+    Hill <- 1
+  }
+  
+  return(list(
+    BioF = BioF,
+    KA = KA,
+    KE = KE,
+    V1 = V1,
+    V2 = V2,
+    Q = Q,
+    Vmax = Vmax,
+    Km = Km,
+    Emax = Emax,
+    C50 = C50,
+    Hill = Hill))
+}
+
+parseMixDosing <- function(input, ev_t) {
+  ev_t <- ev_t$copy()
+  
+  input <- trimws(input)
+  input <- gsub(",", ".", input, fixed = TRUE)
+  
+  lines <- unlist(stringr::str_split(input, pattern = "\\n"))
+  for (l in lines) {
+    parts <- unlist(strsplit(l, "\\s+"))
+    parts <- trimws(parts)
+    
+    if (length(parts) < 3)
+      return("Could not parse dosing (1)")
+    
+    type <- toupper(parts[1])
+    if (type == "IV" || type == "PO") {
+      
+      if (length(parts) < 5)
+        return("Could not parse dosing (2)")
+      
+      dose <- as.numeric(parts[2])
+      start <- as.numeric(parts[3])
+      interval <- suppressWarnings(as.numeric(parts[4]))
+      nr <- suppressWarnings(as.numeric(parts[5]))
+      
+      if (is.na(interval)) {
+        interval = 24
+        nr <- 1
+      }
+      
+      if (is.na(nr))
+        nr <- 1
+      
+      dosing.to <- 1
+      if (type == "IV")
+        dosing.to <- 2
+      
+      ev_t <- RxODE::add.dosing(ev_t, 
+                                dose = dose,
+                                dosing.to = dosing.to,
+                                start.time = start,
+                                dosing.interval = interval,
+                                nbr.doses = nr,
+                                do.sampling = TRUE)
+      
+    } else if (type == "INF") {
+      
+      if (length(parts) < 4)
+        return("Could not parse dosing (3)")
+      
+      # rate in mg/h
+      # Duration in h
+      Rate <- as.numeric(parts[2])
+      Duration <- as.numeric(parts[3])
+      start <- as.numeric(parts[4])
+      Dose <- Rate * Duration 
+      
+      ev_t <- RxODE::add.dosing(ev_t, start.time = start, 
+                                dosing.to = 2, 
+                                dose = Dose,
+                                dur = Duration,
+                                do.sampling = TRUE)
+      
+    } else {
+      
+      return("Unknown dosing type")
+    }
+  }
+  
+  return(ev_t)
+}
+
+
+create_event_table <- function(input, sample_points = 500) {
+  
+  sim_end <- input$SimTime # in h
+  Dose <- input$Dose
+  
+  ev_t <- RxODE::eventTable()
+  
+  # For Mix we parse the event table
+  if (input$Admin == "Mix") {
+    ev_t <- parseMixDosing(input$MixDosing, ev_t)
+  
+  } else {
+    
+    # dosing target
+    dose_to <- 1
+    if (input$Admin == "IV" || input$Admin == "Inf") {
+      dose_to <- 2
+    }
+    
+    # Infusion
+    Duration <- NULL
+    if (input$Admin == "Inf") {
+      Duration <- input$Duration
+      Dose <- input$Rate * Duration 
+    }
+    
+    use_multi <- input$UseMultiDose
+    use_init <- use_multi && input$input$UseInitDose
+    
+    # multi dosing
+    if (!use_multi) {
+      ev_t <- RxODE::add.dosing(ev_t, start.time = 0, 
+                                dosing.to = dose_to, 
+                                dose = Dose,
+                                rate = if (is.null(Duration)) NULL else Dose/Duration,
+                                do.sampling = TRUE)
+    } else  {
+      
+      DosingInterval <- input$DoseInterval # in h
+      DosingTimes <- input$MultiDoses # times
+      InitDose <- input$InitDose # mg
+      
+      start_time <- 0
+      if (use_init) {
+        ev_t <- RxODE::add.dosing(ev_t, start.time = 0, 
+                                  dosing.to = dose_to, 
+                                  dose = InitDose,
+                                  do.sampling = TRUE)
+        if (input$Admin != "Inf")
+          start_time <- DosingInterval
+      }
+      
+      if (DosingTimes == 0)
+        DosingTimes <- floor( (sim_end - start_time) / DosingInterval)
+      
+      if (DosingTimes > 0) {
+        ev_t <- RxODE::add.dosing(ev_t, 
+                                  start.time = start_time, 
+                                  dosing.to = dose_to, 
+                                  dose = Dose,
+                                  rate = if (is.null(Duration)) NULL else Dose/Duration,
+                                  nbr.doses = DosingTimes,
+                                  dosing.interval = DosingInterval,
+                                  do.sampling = TRUE)
+        
+        inf_dur <- if (input$Admin != "Inf") Duration else 0
+        if (start_time + DosingTimes * DosingInterval + inf_dur > sim_end)
+          sim_end <- start_time + (DosingTimes + 1) * DosingInterval + inf_dur
+      }
+    }
+    
+  }
+  
+  max_t_ev <- max(ev_t$time)
+  if (max_t_ev > sim_end)
+    sim_end <- max_t_ev
+  
+  ev_t <- RxODE::add.sampling(ev_t, seq(0, sim_end, length.out = sample_points))
+  return(ev_t)
+}
+
+
 # adds parameters to table
 addParameters <- function(table, input, sim_name) {
   
@@ -130,86 +341,6 @@ calculatePK <- function(table,
   return(table)
 }
 
-
-parseMixDosing <- function(input, ev_t) {
-  ev_t <- ev_t$copy()
-  
-  input <- trimws(input)
-  input <- gsub(",", ".", input, fixed = TRUE)
-  
-  lines <- unlist(stringr::str_split(input, pattern = "\\n"))
-  for (l in lines) {
-    parts <- unlist(strsplit(l, "\\s+"))
-    parts <- trimws(parts)
-    
-    if (length(parts) < 3)
-      return("Could not parse dosing (1)")
-    
-    type <- toupper(parts[1])
-    if (type == "IV" || type == "PO") {
-      
-      if (length(parts) < 5)
-        return("Could not parse dosing (2)")
-      
-      dose <- as.numeric(parts[2])
-      start <- as.numeric(parts[3])
-      interval <- suppressWarnings(as.numeric(parts[4]))
-      nr <- suppressWarnings(as.numeric(parts[5]))
-      
-      if (is.na(interval)) {
-        interval = 24
-        nr <- 1
-      }
-      
-      if (is.na(nr))
-        nr <- 1
-      
-      dosing.to <- 1
-      if (type == "IV")
-        dosing.to <- 2
-      
-      print(dose)
-      print(dosing.to)
-      print(start)
-      print(interval)
-      print(nr)
-      
-      ev_t <- RxODE::add.dosing(ev_t, 
-                                dose = dose,
-                                dosing.to = dosing.to,
-                                start.time = start,
-                                dosing.interval = interval,
-                                nbr.doses = nr,
-                                do.sampling = TRUE)
-      
-    } else if (type == "INF") {
-      
-      if (length(parts) < 4)
-        return("Could not parse dosing (3)")
-      
-      # rate in mg/h
-      # Duration in h
-      Rate <- as.numeric(parts[2])
-      Duration <- as.numeric(parts[3])
-      start <- as.numeric(parts[4])
-      Dose <- Rate * Duration 
-      
-      ev_t <- RxODE::add.dosing(ev_t, start.time = start, 
-                                dosing.to = 2, 
-                                dose = Dose,
-                                dur = Duration,
-                                do.sampling = TRUE)
-      
-    } else {
-      
-      return("Unknown dosing type")
-    }
-  }
-  
-  return(ev_t)
-}
-
-
 # horizontal line
 h_line <- function(y = 0, color  = "red", 
                   dash = 'dash') {
@@ -242,6 +373,7 @@ v_line <- function(x = 0, color = "red",
 plot_simulations <- function(data, 
                              comp, 
                              ylab,
+                             show_panel = FALSE,
                              ylog = FALSE,
                              five_thalf = FALSE) {
   
@@ -303,38 +435,11 @@ plot_simulations <- function(data,
     pad = 4
   )
   
-  plot <- plot  %>% config(displayModeBar = FALSE) %>%
-    layout(margin = marg) 
+  if (!show_panel)
+    plot <- plot  %>% config(displayModeBar = FALSE) 
+  
+  plot <- plot %>% layout(margin = marg) 
   
   return(plot)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
